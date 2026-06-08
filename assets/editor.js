@@ -25,24 +25,110 @@
   let wasJustDragging = false;
   let activePopover = null;
   const selectionHistory = [];
+  const iframeContexts = new Map();  // aiId -> { src, name, title }
+  const shadowContexts = new Map();  // aiId -> { hostTag, hostId }
 
   function on(target, type, fn, capture) {
     target.addEventListener(type, fn, capture);
     listeners.push({ target, type, fn, capture });
   }
 
-  // ── Init ───────────────────────────────────────────────────
+  // ── Init ───────────────────────���───────────────────────────
+  const trackedIframes = new Map(); // iframe -> contentDocument reference
+
+  function ensureIframeListeners(iframe) {
+    try {
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      if (iframeDoc) {
+        const iframeWin = iframe.contentWindow;
+
+        // Check if document object changed (content was replaced/reloaded)
+        const lastDoc = trackedIframes.get(iframe);
+        if (lastDoc === iframeDoc) return; // Same document, already bound
+
+        // Document changed or first time binding
+        trackedIframes.set(iframe, iframeDoc);
+
+        on(iframeDoc, "mousedown", handleMouseDown, true);
+        on(iframeDoc, "click", handleClick, true);
+        on(iframeDoc, "mousemove", handleMouseMove, true);
+        on(iframeDoc, "mouseup", handleMouseUp, true);
+        on(iframeDoc, "mouseleave", () => { showHover(null); cancelDrag(); }, true);
+        on(iframeDoc, "keydown", handleKeyDown, true);
+        // Reposition overlays when iframe content scrolls
+        on(iframeWin, "scroll", () => {
+          if (!repositionRaf) {
+            repositionRaf = true;
+            requestAnimationFrame(() => { positionAllOverlays(); repositionRaf = false; });
+          }
+        }, true);
+      }
+    } catch (e) {
+      // Cross-origin iframe - skip
+    }
+  }
+
+  function addIframe(iframe) {
+    // Method 1: load event listener
+    iframe.addEventListener('load', () => {
+      ensureIframeListeners(iframe);
+    });
+
+    // Method 2: If already loaded, bind immediately
+    try {
+      const doc = iframe.contentDocument;
+      if (doc && (doc.readyState === 'complete' || doc.readyState === 'interactive')) {
+        ensureIframeListeners(iframe);
+      }
+    } catch (e) {
+      // Cross-origin or not ready yet, will be handled by load event
+    }
+  }
+
   function init() {
     assignAiIds(document.body);
     createHoverBox();
     createChatPanel();
 
+    // Main document events
     on(document, "mousedown", handleMouseDown, true);
     on(document, "click", handleClick, true);
     on(document, "mousemove", handleMouseMove, true);
     on(document, "mouseup", handleMouseUp, true);
     on(document, "mouseleave", () => { showHover(null); cancelDrag(); }, true);
     on(document, "keydown", handleKeyDown, true);
+
+    // Add event listeners to all existing same-origin iframes
+    document.querySelectorAll('iframe').forEach(addIframe);
+
+    // Watch for dynamically added iframes
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === 1) {
+            // Direct iframe
+            if (node.tagName === 'IFRAME') {
+              addIframe(node);
+            }
+            // Check for nested iframes
+            const nested = node.querySelectorAll?.('iframe');
+            if (nested) {
+              nested.forEach(addIframe);
+            }
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Lightweight polling as fallback (every 1 second)
+    // This ensures listeners are re-established if iframe content changes
+    // and load event doesn't fire for some reason
+    setInterval(() => {
+      if (!minimized && !paused) {
+        document.querySelectorAll('iframe').forEach(ensureIframeListeners);
+      }
+    }, 1000);
 
     let repositionRaf = false;
     const scheduleReposition = () => {
@@ -66,13 +152,42 @@
     if (chatPanel) chatPanel.remove();
   }
 
-  // ── AI-ID ──────────────────────────────────────────────────
-  function assignAiIds(root) {
+  // ── AI-ID ────────────���─────────────────────────────────────
+  function assignAiIds(root, parentContext = null) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
     let node;
     while ((node = walker.nextNode())) {
       if (isEditorElement(node)) continue;
       if (!node.hasAttribute(AI_ID)) node.setAttribute(AI_ID, `el-${aiIdCounter++}`);
+
+      // Handle same-origin iframes
+      if (node.tagName === 'IFRAME') {
+        try {
+          const iframeDoc = node.contentDocument || node.contentWindow.document;
+          if (iframeDoc) {
+            const aiId = node.getAttribute(AI_ID);
+            iframeContexts.set(aiId, {
+              src: node.src || node.srcdoc,
+              name: node.name,
+              title: node.title || node.src
+            });
+            assignAiIds(iframeDoc.body, { type: 'iframe', aiId });
+          }
+        } catch (e) {
+          // Cross-origin iframe - mark but don't inject
+          node.setAttribute('data-ai-crossorigin', 'true');
+        }
+      }
+
+      // Handle Shadow DOM
+      if (node.shadowRoot) {
+        const aiId = node.getAttribute(AI_ID);
+        shadowContexts.set(aiId, {
+          hostTag: node.tagName.toLowerCase(),
+          hostId: node.id || null
+        });
+        assignAiIds(node.shadowRoot, { type: 'shadow', aiId });
+      }
     }
   }
 
@@ -82,6 +197,37 @@
 
   function byAiId(id) {
     return document.querySelector(`[${AI_ID}="${id}"]`);
+  }
+
+  // ── Element context (iframe/shadow) ─────────────────────────
+  function getElementContext(el) {
+    // Check if element is inside an iframe
+    const win = el.ownerDocument.defaultView;
+    if (win !== window) {
+      // Inside iframe - find the corresponding iframe element
+      const iframeEl = Array.from(document.querySelectorAll('iframe'))
+        .find(f => {
+          try {
+            return f.contentWindow === win;
+          } catch (e) {
+            return false;
+          }
+        });
+      if (iframeEl) {
+        return { type: 'iframe', aiId: iframeEl.getAttribute(AI_ID) };
+      }
+    }
+
+    // Check if element is inside a shadow root
+    if (el.getRootNode() !== el.ownerDocument) {
+      // Inside shadow root - find the host
+      const root = el.getRootNode();
+      if (root.host) {
+        return { type: 'shadow', aiId: root.host.getAttribute(AI_ID) };
+      }
+    }
+
+    return null;
   }
 
   // ── Resolve target ─────────────────────────────────────────
@@ -130,8 +276,29 @@
       return;
     }
     const r = el.getBoundingClientRect();
-    hoverBox.style.top = (r.top - 1) + "px";
-    hoverBox.style.left = (r.left - 1) + "px";
+
+    // Convert to main document coordinates if element is in iframe
+    let offsetX = 0;
+    let offsetY = 0;
+    const win = el.ownerDocument.defaultView;
+    if (win !== window) {
+      const iframeEl = Array.from(document.querySelectorAll('iframe'))
+        .find(f => {
+          try {
+            return f.contentWindow === win;
+          } catch (e) {
+            return false;
+          }
+        });
+      if (iframeEl) {
+        const iframeRect = iframeEl.getBoundingClientRect();
+        offsetX = iframeRect.left;
+        offsetY = iframeRect.top;
+      }
+    }
+
+    hoverBox.style.top = (r.top + offsetY - 1) + "px";
+    hoverBox.style.left = (r.left + offsetX - 1) + "px";
     hoverBox.style.width = (r.width + 2) + "px";
     hoverBox.style.height = (r.height + 2) + "px";
     hoverBox.style.opacity = "1";
@@ -251,6 +418,16 @@
     const box = document.createElement("div");
     box.className = `${NS}-sel-box`;
 
+    // Add context-specific class
+    const context = getElementContext(el);
+    if (context) {
+      if (context.type === 'iframe') {
+        box.classList.add(`${NS}-in-iframe`);
+      } else if (context.type === 'shadow') {
+        box.classList.add(`${NS}-in-shadow`);
+      }
+    }
+
     const corners = [0, 1, 2, 3].map((i) => {
       const c = document.createElement("div");
       c.className = `${NS}-sel-corner`;
@@ -285,30 +462,51 @@
     const ov = selOverlays.get(aiId);
     if (!ov) return;
     const r = el.getBoundingClientRect();
+
+    // Convert to main document coordinates if element is in iframe
+    let offsetX = 0;
+    let offsetY = 0;
+    const context = getElementContext(el);
+    if (context && context.type === 'iframe') {
+      const iframeEl = Array.from(document.querySelectorAll('iframe'))
+        .find(f => {
+          try {
+            return f.contentWindow === el.ownerDocument.defaultView;
+          } catch (e) {
+            return false;
+          }
+        });
+      if (iframeEl) {
+        const iframeRect = iframeEl.getBoundingClientRect();
+        offsetX = iframeRect.left;
+        offsetY = iframeRect.top;
+      }
+    }
+
     const pad = 2;
 
-    ov.box.style.top = (r.top - pad) + "px";
-    ov.box.style.left = (r.left - pad) + "px";
+    ov.box.style.top = (r.top + offsetY - pad) + "px";
+    ov.box.style.left = (r.left + offsetX - pad) + "px";
     ov.box.style.width = (r.width + pad * 2) + "px";
     ov.box.style.height = (r.height + pad * 2) + "px";
 
     const cs = 6;
     const pos = [
-      { top: r.top - pad - cs / 2,    left: r.left - pad - cs / 2 },
-      { top: r.top - pad - cs / 2,    left: r.right + pad - cs / 2 },
-      { top: r.bottom + pad - cs / 2, left: r.left - pad - cs / 2 },
-      { top: r.bottom + pad - cs / 2, left: r.right + pad - cs / 2 },
+      { top: r.top + offsetY - pad - cs / 2,    left: r.left + offsetX - pad - cs / 2 },
+      { top: r.top + offsetY - pad - cs / 2,    left: r.right + offsetX + pad - cs / 2 },
+      { top: r.bottom + offsetY + pad - cs / 2, left: r.left + offsetX - pad - cs / 2 },
+      { top: r.bottom + offsetY + pad - cs / 2, left: r.right + offsetX + pad - cs / 2 },
     ];
     for (let i = 0; i < 4; i++) {
       ov.corners[i].style.top = pos[i].top + "px";
       ov.corners[i].style.left = pos[i].left + "px";
     }
 
-    ov.label.style.top = (r.top - pad - 20) + "px";
-    ov.label.style.left = (r.left - pad) + "px";
+    ov.label.style.top = (r.top + offsetY - pad - 20) + "px";
+    ov.label.style.left = (r.left + offsetX - pad) + "px";
 
-    ov.annotateBtn.style.top = (r.top - pad - 22) + "px";
-    ov.annotateBtn.style.left = (r.right + pad + 4) + "px";
+    ov.annotateBtn.style.top = (r.top + offsetY - pad - 22) + "px";
+    ov.annotateBtn.style.left = (r.right + offsetX + pad + 4) + "px";
 
     if (annotations.has(aiId)) {
       ov.annotateBtn.classList.add(`${NS}-has-note`);
@@ -727,7 +925,13 @@
     const lines = ["Page: " + location.pathname, ""];
     selectedElements.forEach((el, i) => {
       const ctx = buildElementContext(el, i + 1);
-      lines.push(`${i + 1}. ${elementLabel(el)} <${ctx.tag}>`);
+      let label = `${i + 1}. ${elementLabel(el)} <${ctx.tag}>`;
+
+      // Add context indicator
+      if (ctx.iframe) label += ` 📄 ${ctx.iframe}`;
+      if (ctx.shadow) label += ` 🔲 ${ctx.shadow}`;
+
+      lines.push(label);
       if (ctx.selector)  lines.push(`   selector: ${ctx.selector}`);
       if (ctx.source)    lines.push(`   source: ${ctx.source}`);
       if (ctx.react)     lines.push(`   react: ${ctx.react}`);
@@ -819,7 +1023,7 @@
     }
   }
 
-  // ── Element context ────────────────────────────────────────
+  // ── Element context ──────────────────────────────���─────────
   function buildElementContext(el, index) {
     const dataAttrs = {};
     for (const attr of el.attributes) {
@@ -829,7 +1033,7 @@
     }
     const reactInfo = getReactDebug(el);
     const isReact = !!Object.keys(reactInfo).length;
-    return {
+    const result = {
       index,
       aiId: el.getAttribute(AI_ID),
       selector: buildSelector(el),
@@ -840,10 +1044,39 @@
       dataAttrs,
       ...reactInfo,
     };
+
+    // Add iframe/shadow context info
+    const context = getElementContext(el);
+    if (context) {
+      if (context.type === 'iframe') {
+        const info = iframeContexts.get(context.aiId);
+        result.iframe = info?.src || info?.title || 'iframe';
+      } else if (context.type === 'shadow') {
+        const info = shadowContexts.get(context.aiId);
+        result.shadow = info?.hostTag || 'shadow-root';
+      }
+    }
+
+    return result;
   }
 
   function buildSelector(el) {
-    if (el.id) return `#${el.id}`;
+    // Check if element is in iframe/shadow and add prefix
+    const context = getElementContext(el);
+    let prefix = '';
+
+    if (context) {
+      if (context.type === 'iframe') {
+        const iframeInfo = iframeContexts.get(context.aiId);
+        prefix = `iframe${iframeInfo?.name ? `[${iframeInfo.name}]` : ''} > `;
+      } else if (context.type === 'shadow') {
+        const shadowInfo = shadowContexts.get(context.aiId);
+        prefix = `shadow:${shadowInfo?.hostTag || 'host'} > `;
+      }
+    }
+
+    // Original selector logic
+    if (el.id) return prefix + `#${el.id}`;
     const parts = [];
     let node = el;
     while (node && node !== document.body && node !== document.documentElement) {
@@ -857,7 +1090,7 @@
       parts.unshift(seg);
       node = node.parentElement;
     }
-    return parts.join(" > ");
+    return prefix + parts.join(" > ");
   }
 
   function truncate(s, max) {

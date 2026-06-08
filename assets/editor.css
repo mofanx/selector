@@ -36,6 +36,18 @@
   animation: ai-editor-sel-in 180ms cubic-bezier(0.2, 0, 0.1, 1) forwards;
 }
 
+/* iframe 内元素的选择框 - 紫色边框 */
+.ai-editor-sel-box.ai-editor-in-iframe {
+  border-color: #9333ea;
+  background: rgba(147, 51, 234, 0.06);
+}
+
+/* shadow 内元素的选择框 - 绿色边框 */
+.ai-editor-sel-box.ai-editor-in-shadow {
+  border-color: #059669;
+  background: rgba(5, 150, 105, 0.06);
+}
+
 /* ── Corner handles ──────────────────────────────────────── */
 @keyframes ai-editor-corner-in {
   from { opacity: 0; transform: scale(0); }

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Selector Test - iframe & Shadow DOM</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 40px;
+    background: #f5f5f5;
+  }
+  h1{font-size: 24px;margin-bottom: 20px;color: #333;}
+  h2{font-size: 18px;margin: 20px 0 10px;color: #555;}
+  .section{
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }
+  .main-button{
+    padding: 10px 20px;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .main-button:hover{background: #0056b3;}
+  .iframe-container{
+    border: 2px dashed #ccc;
+    padding: 20px;
+    margin: 10px 0;
+    min-height: 150px;
+  }
+  iframe{
+    width: 100%;
+    height: 200px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+  .shadow-host{
+    border: 2px dashed #28a745;
+    padding: 20px;
+    margin: 10px 0;
+    min-height: 100px;
+  }
+  .shadow-content{
+    padding: 10px;
+    background: #e8f5e9;
+    border-radius: 4px;
+  }
+  .instructions{
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+  }
+  .instructions code{
+    background: #f8f9fa;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <h1>Selector Test Page</h1>
+
+  <div class="instructions">
+    <strong>Test Instructions:</strong><br>
+    1. Install and activate the Selector bookmarklet<br>
+    2. Try selecting elements in each section below<br>
+    3. Press <code>⌘C</code> to copy and check the output for context indicators:
+       <br>• <code>📄</code> for iframe elements
+       <br>• <code>🔲</code> for shadow DOM elements
+  </div>
+
+  <!-- Main document elements -->
+  <div class="section">
+    <h2>1. Main Document Elements</h2>
+    <p>These elements are in the main document (no special context).</p>
+    <button class="main-button">Click to select this button</button>
+    <div style="margin-top:10px;padding:10px;background:#f0f0f0;border-radius:4px;">
+      <span style="color:#666;">This is a regular div in the main document</span>
+    </div>
+  </div>
+
+  <!-- Shadow DOM elements -->
+  <div class="section">
+    <h2>2. Shadow DOM Elements</h2>
+    <p>The green area below contains Shadow DOM. Try selecting elements inside it.</p>
+    <div id="shadow-host" class="shadow-host">Shadow DOM Host</div>
+  </div>
+
+  <!-- Same-origin iframe -->
+  <div class="section">
+    <h2>3. Same-Origin iframe</h2>
+    <p>The iframe below is same-origin (loaded from blob: URL). Elements inside should be selectable.</p>
+    <div class="iframe-container">
+      <iframe id="same-origin-iframe" title="Same-Origin Test"></iframe>
+    </div>
+  </div>
+
+  <!-- Cross-origin iframe -->
+  <div class="section">
+    <h2>4. Cross-Origin iframe</h2>
+    <p>The iframe below is cross-origin (example.com). Elements inside cannot be selected due to security restrictions.</p>
+    <div class="iframe-container">
+      <iframe src="https://example.com" title="Cross-Origin Test"></iframe>
+    </div>
+  </div>
+
+  <!-- Dynamic iframe test -->
+  <div class="section">
+    <h2>5. Dynamic iframe Test</h2>
+    <p>Click the buttons to dynamically add or remove iframes. Test if Selector can handle dynamic iframe changes reliably.</p>
+    <div style="display:flex;gap:10px;margin-bottom:15px;">
+      <button id="add-iframe-btn" class="main-button" style="background:#28a745;">+ Add iframe</button>
+      <button id="remove-iframe-btn" class="main-button" style="background:#dc3545;">- Remove Last iframe</button>
+      <button id="toggle-pause-btn" class="main-button" style="background:#6c757d;">Toggle Pause</button>
+    </div>
+    <div id="dynamic-iframe-container" style="display:flex;flex-direction:column;gap:10px;">
+      <!-- Dynamic iframes will be inserted here -->
+    </div>
+    <p style="margin-top:10px;font-size:12px;color:#666;">
+      <strong>Test sequence:</strong> Pause → Add iframe → Resume in new iframe → Remove iframe → Repeat
+    </p>
+  </div>
+
+  <script>
+    // Create Shadow DOM
+    const shadowHost = document.getElementById('shadow-host');
+    const shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+
+    shadowRoot.innerHTML = `
+      <style>
+        .shadow-content {
+          padding: 15px;
+          background: #e8f5e9;
+          border-radius: 4px;
+          font-family: inherit;
+        }
+        .shadow-button {
+          padding: 8px 16px;
+          background: #28a745;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 14px;
+          margin-top: 10px;
+        }
+        .shadow-button:hover {
+          background: #218838;
+        }
+      </style>
+      <div class="shadow-content">
+        <p style="margin:0 0 10px 0;">This content is inside a Shadow DOM.</p>
+        <button class="shadow-button">Shadow Button</button>
+      </div>
+    `;
+
+    // Create same-origin iframe content
+    const iframe = document.getElementById('same-origin-iframe');
+    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+
+    iframeDoc.open();
+    iframeDoc.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            padding: 20px;
+            margin: 0;
+            background: #f8f9fa;
+          }
+          .iframe-header {
+            font-size: 16px;
+            font-weight: bold;
+            color: #491eff;
+            margin-bottom: 15px;
+          }
+          .iframe-button {
+            padding: 8px 16px;
+            background: #491eff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+          }
+          .iframe-button:hover {
+            background: #3b14d4;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="iframe-header">Inside Same-Origin iframe</div>
+        <p style="margin: 10px 0; color: #666;">Try selecting these elements.</p>
+        <button class="iframe-button">Iframe Button</button>
+      </body>
+      </html>
+    `);
+    iframeDoc.close();
+
+    // Dynamic iframe test
+    let dynamicIframeCount = 0;
+    const dynamicContainer = document.getElementById('dynamic-iframe-container');
+
+    function createDynamicIframe(index) {
+      const iframeWrapper = document.createElement('div');
+      iframeWrapper.className = 'iframe-container';
+      iframeWrapper.style.cssText = 'position:relative;';
+
+      const iframe = document.createElement('iframe');
+      iframe.title = `Dynamic iframe ${index}`;
+      iframe.style.cssText = 'width: 100%; height: 150px; border: 1px solid #ddd; border-radius: 4px;';
+
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = '×';
+      removeBtn.style.cssText = 'position:absolute;top:5px;right:5px;width:24px;height:24px;border:none;background:#dc3545;color:white;border-radius:50%;cursor:pointer;font-size:16px;line-height:1;';
+      removeBtn.title = 'Remove this iframe';
+      removeBtn.onclick = () => {
+        iframeWrapper.remove();
+      };
+
+      iframeWrapper.appendChild(iframe);
+      iframeWrapper.appendChild(removeBtn);
+      dynamicContainer.appendChild(iframeWrapper);
+
+      // Populate iframe content
+      const newIframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      newIframeDoc.open();
+      newIframeDoc.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+              padding: 15px;
+              margin: 0;
+              background: #fff9e6;
+            }
+            .dynamic-header {
+              font-size: 14px;
+              font-weight: bold;
+              color: #b38600;
+              margin-bottom: 10px;
+            }
+            .dynamic-button {
+              padding: 6px 14px;
+              background: #ffc107;
+              color: #333;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 13px;
+            }
+            .dynamic-button:hover {
+              background: #e6a800;
+            }
+            .status-text {
+              font-size: 12px;
+              color: #666;
+              margin-top: 8px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="dynamic-header">🆕 Dynamic iframe #${index}</div>
+          <button class="dynamic-button">Click to Select</button>
+          <div class="status-text">Try pressing Space here to toggle pause</div>
+        </body>
+        </html>
+      `);
+      newIframeDoc.close();
+    }
+
+    document.getElementById('add-iframe-btn').addEventListener('click', function() {
+      dynamicIframeCount++;
+      createDynamicIframe(dynamicIframeCount);
+    });
+
+    document.getElementById('remove-iframe-btn').addEventListener('click', function() {
+      const wrappers = dynamicContainer.querySelectorAll('.iframe-container');
+      if (wrappers.length > 0) {
+        wrappers[wrappers.length - 1].remove();
+      }
+    });
+
+    document.getElementById('toggle-pause-btn').addEventListener('click', function() {
+      // Simulate Space key press
+      const event = new KeyboardEvent('keydown', {
+        key: ' ',
+        code: 'Space',
+        keyCode: 32,
+        which: 32,
+        bubbles: true
+      });
+      document.dispatchEvent(event);
+    });
+  </script>
+</body>
+</html>
